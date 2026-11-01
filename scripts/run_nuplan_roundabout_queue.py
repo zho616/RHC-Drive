@@ -271,7 +271,7 @@ def run(output):
             prior=json.loads(Path(plan['after_status']).read_text())
             if prior['phase']=='completed':
                 break
-            if prior['phase'] in ('failed','interrupted','blocked') or not Path(f'/proc/{prior["runner_pid"]}').exists():
+            if prior['phase'] in ('failed','interrupted','blocked','completed_with_failures','cancelled') or not Path(f'/proc/{prior["runner_pid"]}').exists():
                 raise RuntimeError('Prerequisite training/evaluations did not finish successfully')
             if state.get('prerequisite_phase') != prior['phase']:
                 state['prerequisite_phase']=prior['phase'];write_json(status_path,state)

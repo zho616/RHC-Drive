@@ -1,0 +1,18 @@
+defaults:
+  - metadrive_tintersection_mass_friction_shallow
+  - _self_
+
+# A/B/C/D are selected through these switches by the experiment runner.
+# B: WM gradient only. C/D: original stop-gradient, as requested by the user.
+model:
+  context:
+    use_history_context: true
+    enabled: ${model.context.use_history_context}
+    use_response_loss: true
+    use_context_exchange: true
+    injection: dali_shallow
+    actor_critic: false
+    aux_weight: 1.0
+    swap_weight: 1.0
+    wm_grad_scale: 0.0
+    log_grad_norms: true

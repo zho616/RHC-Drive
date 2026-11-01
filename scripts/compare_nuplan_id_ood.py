@@ -23,6 +23,7 @@ SOURCES = {
 }
 DATA = Path('/home/server/datasets/nuplan/scenarionet_pittsburgh_8000/test')
 CHECKPOINTS = {name: run/('baseline/best.pt' if name == 'r2dreamer' else 'best.pt') for name,run in RUNS.items()}
+ID_FOLDERS = {name: run if name == 'r2dreamer' else run/'evaluation' for name,run in RUNS.items()}
 METRICS = ('success', 'crash', 'out_of_road', 'timeout', 'route_completion', 'reward', 'mean_speed_km_h')
 
 
@@ -50,7 +51,7 @@ def aggregate(output, splits):
         for name in RUNS:
             seed_rows = []
             for i in range(3):
-                folder = ((RUNS[name] if name == 'r2dreamer' else RUNS[name]/'evaluation')/f'test_seed{i}'
+                folder = (ID_FOLDERS[name]/f'test_seed{i}'
                           if split == 'id' else output/name/split/f'seed{i}')
                 summary, rows = read_results(folder)
                 assert summary['checkpoint_sha256'] == hashlib.sha256(CHECKPOINTS[name].read_bytes()).hexdigest()
@@ -82,8 +83,8 @@ def aggregate(output, splits):
             pairing_verified=True)
     write(output/'comparison.json', result)
     lines = ['# nuPlan Pittsburgh：R2Dreamer 与 R2Dreamer+context', '',
-        '两组均训练500K步，使用验证集选出的best权重；相同100个留出场景、相同底盘参数、3组推理种子。一个训练种子，推理重复不是独立训练。', '',
-        'R2Dreamer best为490001步，context best为470001步。ID沿用先前完成的GPU评估；本次S/XL OOD两组均使用CPU评估，未占用正在训练环岛的GPU。每个条件内部的方法比较使用相同设备。训练配置差异仅为context相关选项及日志目录，见training_config_differences.json。', '',
+        '使用验证集选出的best权重；相同100个留出场景、相同底盘参数、3组推理种子。一个训练种子，推理重复不是独立训练。训练预算和配置以各训练目录记录为准。', '',
+        'ID沿用已完成的独立测试；本次S/XL评估使用的设备见status.json，各best权重步数和指纹见comparison.json。', '',
         'S/XL为未见车型OOD；质量及轮胎摩擦倍率仍为0.6–1.4，最大转角取各车型名义值。车型变化同时包含几何、名义动力和质量等变化。未增加城市或倍率范围外OOD。', '',
         '| 测试 | 方法 | 成功率 | 碰撞率 | 出界率 | 超时率 | 路线完成率 | 回报 |',
         '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |']
@@ -101,11 +102,29 @@ def aggregate(output, splits):
 
 
 def main():
+    global RUNS, SOURCES, CHECKPOINTS, ID_FOLDERS, DATA
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--device', default='cpu')
     parser.add_argument('--workers',type=int,default=4)
-    args=parser.parse_args(); output=args.output.resolve(); output.mkdir(parents=True,exist_ok=True)
+    parser.add_argument('--training-queue',type=Path,help='Evaluate the completed R2 runs from this newer queue')
+    args=parser.parse_args()
+    if args.workers<1:parser.error('--workers must be positive')
+    if args.training_queue:
+        from omegaconf import OmegaConf
+        queue=args.training_queue.resolve()
+        plan=json.loads((queue/'plan.json').read_text())
+        status=json.loads((queue/'status.json').read_text())
+        jobs={name:next(j for j in plan['jobs'] if j['name']=='nuplan_'+name) for name in RUNS}
+        assert all(status['jobs'][j['name']]['state']=='completed' for j in jobs.values())
+        RUNS={name:Path(j['logdir']) for name,j in jobs.items()}
+        SOURCES={name:Path(j['source']) for name,j in jobs.items()}
+        CHECKPOINTS={name:path/'best.pt' for name,path in RUNS.items()}
+        ID_FOLDERS={name:path/'evaluation' for name,path in RUNS.items()}
+        configs=[OmegaConf.load(path/'.hydra/config.yaml') for path in RUNS.values()]
+        assert len({str(c.env.scenario_test_dir) for c in configs})==1
+        DATA=Path(configs[0].env.scenario_test_dir)
+    output=args.output.resolve(); output.mkdir(parents=True,exist_ok=True)
     old=json.loads((output/'status.json').read_text()) if (output/'status.json').exists() else {}
     previous={(j['method'],j['chassis'],j['seed']):j for j in old.get('jobs',[])}
     state=dict(status='running',pid=os.getpid(),device=args.device,jobs=[])
@@ -113,6 +132,7 @@ def main():
     write(output/'status.json',state)
     aggregate(output,['id'])
     environment=os.environ.copy(); environment.update(OMP_NUM_THREADS='1',MKL_NUM_THREADS='1')
+    if args.device=='cpu':environment['CUDA_VISIBLE_DEVICES']=''
     environment['PYTHONPATH']='/home/server/projects/metadrive'
     def execute(chassis,seed,name):
         run=RUNS[name]

@@ -9,6 +9,11 @@ For the current nuPlan / roundabout / T-intersection core code and independent
 multi-server or multi-GPU runs, see [parallel server setup](docs/parallel_server_training.md).
 The portable entry point is `python scripts/train_server.py --help`.
 
+For the **current roundabout five-way ablations**, Full H5 and the no-context
+baseline, use `python scripts/train_roundabout_ablation.py --help` and follow
+[cloud training with the matched 500K recipe](docs/cloud_roundabout_training.md).
+This entry point needs no local experiment archives or checkpoints.
+
 ## R2-Dreamer: Redundancy-Reduced World Models without Decoders or Augmentation
 
 This repository provides the official implementation of [R2-Dreamer][r2dreamer] (ICLR 2026), a decoder-free, augmentation-free world model with redundancy-reducing regularization on latent representations. It also includes an efficient PyTorch DreamerV3 reproduction that trains **~5x faster** than a widely used [codebase][dreamerv3-torch], along with other baselines. Selecting R2-Dreamer via the config provides an additional **~1.6x speedup** over this baseline.

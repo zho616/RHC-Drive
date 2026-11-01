@@ -42,14 +42,19 @@ def main():
     for d in data:
         d['reward'] = sum(d['log_reward_' + k] for k in ['progress', 'speed', 'lateral', 'terminal']).astype(np.float32)
         old = d['ctx_history']
-        state = np.column_stack((d['ctx_ego_state'], d['speed'], -np.deg2rad(d['wheel_degrees']))).astype(np.float32)
+        original_state_dim = d['ctx_ego_state'].shape[-1]
+        assert original_state_dim in (2, 4)
+        state = (np.column_stack((d['ctx_ego_state'], d['speed'], -np.deg2rad(d['wheel_degrees'])))
+                 if original_state_dim == 2 else d['ctx_ego_state']).astype(np.float32)
+        np.testing.assert_allclose(state[:, 2], d['speed'], atol=1e-5)
+        np.testing.assert_allclose(state[:, 3], -np.deg2rad(d['wheel_degrees']), atol=1e-5)
         hist = np.zeros((len(state), 5, 6), np.float32)
         for t in range(len(state)):
             count = int(d['ctx_mask'][t].sum())
             if count:
                 sl = slice(t-count+1, t+1)
-                np.testing.assert_allclose(old[t, -count:, :2], state[sl, :2], atol=1e-6)
-                np.testing.assert_allclose(old[t, -count:, 2:], d['ctx_prev_action'][sl], atol=1e-6)
+                np.testing.assert_allclose(old[t, -count:, :original_state_dim], state[sl, :original_state_dim], atol=1e-6)
+                np.testing.assert_allclose(old[t, -count:, original_state_dim:], d['ctx_prev_action'][sl], atol=1e-6)
                 hist[t, -count:] = np.column_stack((state[sl], d['ctx_prev_action'][sl]))
         d['ctx_ego_state'], d['ctx_history'] = state, hist
         d['ctx_episode_uid'] = np.zeros((len(state), 2), np.int64)
@@ -68,7 +73,8 @@ def main():
         'corpus': str(args.corpus.resolve()), 'origins_sha256': hashlib.sha256((args.corpus/'origins.json').read_bytes()).hexdigest(),
         'draws': args.draws, 'device': args.device, 'precision': 'float32, highest matmul precision',
         'protocol': 'Common natural trajectories, action-conditioned open loop, dynamic predicted context, no future observations/contexts. No predicted-continuation gating; post-episode targets masked.',
-        'corpus_limits': '10 maps (30000..30009), 5 nominal chassis, 2 reference collectors. One training seed; not the random-profile driving test.'}
+        'corpus_limits': 'Shared cached corpus; one trained checkpoint per method. See corpus provenance for map/chassis sampling.',
+        'corpus_provenance': json.loads((args.corpus/'provenance.json').read_text()) if (args.corpus/'provenance.json').exists() else None}
     (args.output / 'provenance.json').write_text(json.dumps(provenance, indent=2)+'\n')
     device = args.device
     def tensor(x): return torch.as_tensor(x, device=device)

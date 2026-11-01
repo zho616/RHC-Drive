@@ -31,7 +31,19 @@ class Dreamer(nn.Module):
         self.rep_loss = str(config.rep_loss)
 
         context_config = getattr(config, "context", None)
+        history_flag = getattr(context_config, "use_history_context", None) if context_config else None
         self.context_enabled = bool(context_config and context_config.enabled)
+        self.context_source = str(getattr(context_config, "source", "encoded_history")) if context_config else "encoded_history"
+        if self.context_source not in ("encoded_history", "oracle", "raw_history"):
+            raise ValueError("Unknown context source")
+        self.context_dim = 8
+        if history_flag is not None and bool(history_flag) != self.context_enabled:
+            raise ValueError("context.enabled and use_history_context must agree (link enabled to the switch in ablation configs)")
+        self.context_response_enabled = self.context_enabled and bool(getattr(context_config, "use_response_loss", True))
+        self.context_prediction_horizon = getattr(context_config, "prediction_horizon", 5) if context_config else 5
+        if type(self.context_prediction_horizon) is not int or self.context_prediction_horizon < 1:
+            raise ValueError("context.prediction_horizon must be a positive integer")
+        self.context_log_grads = self.context_enabled and bool(getattr(context_config, "log_grad_norms", False))
         self.context_shallow = self.context_enabled and context_config.injection == "dali_shallow"
         self.context_wm_grad_scale = float(getattr(context_config, "wm_grad_scale", 0.0)) if context_config else 0.0
         if not math.isfinite(self.context_wm_grad_scale) or self.context_wm_grad_scale < 0:
@@ -64,6 +76,14 @@ class Dreamer(nn.Module):
                         "ctx_history": (5, self.context_state_dim + 2), "ctx_mask": (5,)}
             if any(tuple(obs_space.spaces[k].shape) != shape for k, shape in expected.items()):
                 raise ValueError("Context state/history shapes disagree; use matching replay and checkpoint layouts")
+            if self.context_source != "encoded_history":
+                if not self.context_shallow or self.context_wm_grad_scale or self.context_response_enabled:
+                    raise ValueError("Direct conditions require Shallow, no auxiliary losses, and no encoder gradients")
+                from context import ORACLE_KEYS
+                if self.context_source == "oracle" and not set(ORACLE_KEYS).issubset(obs_space.spaces):
+                    raise ValueError("Oracle conditioning requires actual chassis parameters")
+                self.context_dim = len(ORACLE_KEYS) if self.context_source == "oracle" else 5 * (self.context_state_dim + 2) + 5
+                rssm_kwargs["context_dim"] = self.context_dim
             rssm_class = ContextRSSM
 
         # World model components
@@ -163,21 +183,34 @@ class Dreamer(nn.Module):
             })
         if self.context_enabled:
             from context import HistoryEncoder, ResidualDynamics
-            self.context_encoder = HistoryEncoder(self.context_state_dim)
-            self.context_dynamics = ResidualDynamics(self.context_state_dim)
+            if self.context_source == "encoded_history":
+                self.context_encoder = HistoryEncoder(self.context_state_dim)
             aux_weight = float(context_config.aux_weight)
             if not math.isfinite(aux_weight) or aux_weight < 0:
                 raise ValueError("context.aux_weight must be finite and nonnegative")
-            self._loss_scales["context_aux"] = aux_weight
+            if self.context_response_enabled:
+                self._loss_scales["context_aux"] = aux_weight
             self.context_swap_weight = float(getattr(context_config, "swap_weight", 0.0))
             if not math.isfinite(self.context_swap_weight) or self.context_swap_weight < 0:
                 raise ValueError("context.swap_weight must be finite and nonnegative")
-            if self.context_swap_weight:
+            exchange_flag = getattr(context_config, "use_context_exchange", None)
+            self.context_exchange_enabled = bool(self.context_swap_weight) if exchange_flag is None else bool(exchange_flag)
+            if self.context_source != "encoded_history" and (self.context_exchange_enabled or aux_weight or self.context_swap_weight):
+                raise ValueError("Direct conditions must disable response and exchange weights")
+            if self.context_exchange_enabled and self.context_swap_weight <= 0:
+                raise ValueError("Enabled Context Exchange requires a positive swap_weight")
+            if self.context_exchange_enabled:
                 from context import SWAP_PROFILE_KEYS
                 if not set((*SWAP_PROFILE_KEYS, "ctx_episode_uid")).issubset(obs_space.spaces):
                     raise ValueError("Context exchange requires chassis metadata and true episode IDs")
                 self._loss_scales["context_swap"] = self.context_swap_weight
-            modules.update(context_encoder=self.context_encoder, context_dynamics=self.context_dynamics)
+            if hasattr(self, "context_encoder"):
+                modules.update(context_encoder=self.context_encoder)
+            if self.context_response_enabled or self.context_exchange_enabled:
+                self.context_dynamics = ResidualDynamics(self.context_state_dim)
+                modules.update(context_dynamics=self.context_dynamics)
+            elif self.context_source == "encoded_history" and (not self.context_shallow or not self.context_wm_grad_scale):
+                raise ValueError("History-only requires dali_shallow and positive wm_grad_scale; otherwise E has no training signal")
         # count number of parameters in each module
         for key, module in modules.items():
             if isinstance(module, nn.Parameter):
@@ -203,7 +236,7 @@ class Dreamer(nn.Module):
             betas=(config.beta1, config.beta2),
             eps=config.eps,
         )
-        self._scaler = GradScaler()
+        self._scaler = GradScaler(enabled=self.device.type == 'cuda')
 
         def lr_lambda(step):
             if config.warmup:
@@ -314,7 +347,7 @@ class Dreamer(nn.Module):
         # (B, S, K), (B, D)
         extra = ()
         if self.context_enabled:
-            context = self.context_encoder(p_obs["ctx_history"], p_obs["ctx_mask"])
+            context = self._context_condition(p_obs)
             context = torch.where(obs["is_first"].bool().reshape(-1, 1), 0., context)
             extra = (context,)
         stoch, deter, _ = self._frozen_rssm.obs_step(prev_stoch, prev_deter, prev_action, embed, obs["is_first"], *extra)
@@ -379,9 +412,15 @@ class Dreamer(nn.Module):
         if self.rep_loss == "dreamerpro":
             self.ema_update()
         metrics = {}
-        with autocast(device_type=self.device.type, dtype=torch.float16):
+        with autocast(device_type=self.device.type, dtype=torch.float16, enabled=self.device.type == 'cuda'):
             (stoch, deter), mets = self._cal_grad(p_data, initial)
         self._scaler.unscale_(self._optimizer)  # unscale grads in params
+        if self.context_log_grads:
+            # Actual unscaled gradients before AGC; diagnostic only, no graph or RNG changes.
+            for name in ("context_encoder", "context_dynamics", "rssm"):
+                module = getattr(self, name, None)
+                grads = [p.grad.detach().float().norm() for p in module.parameters() if p.grad is not None] if module is not None else []
+                mets[f"grad/{name}_norm"] = torch.stack(grads).norm() if grads else torch.zeros((), device=self.device)
         if self.rep_loss == "dreamerpro" and self._ema_updates < self.freeze_prototypes_iters:
             self._prototypes.grad.zero_()
         if self._log_grads:
@@ -431,13 +470,15 @@ class Dreamer(nn.Module):
         # (B, T, S, K), (B, T, D), (B, T, S, K)
         extra = ()
         if self.context_enabled:
-            from context import auxiliary_loss
-            context = self.context_encoder(data["ctx_history"], data["ctx_mask"])
+            context = self._context_condition(data)
             context = torch.where(data["is_first"].bool().reshape(B, T, 1), 0., context)
-            losses["context_aux"], metrics["context/valid_targets"], physical_metrics = auxiliary_loss(
-                self.context_dynamics, data, context, return_metrics=True)
-            metrics.update(physical_metrics)
-            if self.context_swap_weight:
+            if self.context_response_enabled:
+                from context import auxiliary_loss
+                losses["context_aux"], metrics["context/valid_targets"], physical_metrics = auxiliary_loss(
+                    self.context_dynamics, data, context, return_metrics=True,
+                    prediction_horizon=self.context_prediction_horizon)
+                metrics.update(physical_metrics)
+            if self.context_exchange_enabled:
                 from context import context_swap_loss
                 losses["context_swap"], swap_metrics = context_swap_loss(self.context_dynamics, data, context)
                 metrics.update(swap_metrics)
@@ -623,6 +664,12 @@ class Dreamer(nn.Module):
 
     CONTEXT_WM_LOSSES = ("dyn", "rep", "barlow", "rew", "con")
 
+    def _context_condition(self, data):
+        if self.context_source == "encoded_history":
+            return self.context_encoder(data["ctx_history"], data["ctx_mask"])
+        from context import direct_condition
+        return direct_condition(data, self.context_source, self.context_state_dim)
+
     def _context_wm_surrogate(self, losses, context, wm_context):
         """Route selected first-order WM gradients to E, preserving all WM gradients.
 
@@ -680,7 +727,7 @@ class Dreamer(nn.Module):
         state = data["ctx_ego_state"].reshape(-1, self.context_state_dim)
         history = data["ctx_history"].reshape(-1, 5, self.context_state_dim + 2)
         mask = data["ctx_mask"].reshape(-1, 5).bool()
-        context = context.reshape(-1, 8)
+        context = context.reshape(-1, self.context_dim)
         fixed = context
         alive = ~(data["is_last"] | data["is_terminal"]).bool().reshape(-1)
         stoch, deter = start
@@ -692,8 +739,11 @@ class Dreamer(nn.Module):
             feats.append(feat)
             actions.append(action)
             contexts.append(behavior_context)
-            state, context, history, mask = refresh_context(
-                self.context_encoder, self.context_dynamics, state, action, context, history, mask, alive)
+            if hasattr(self, "context_dynamics"):
+                state, context, history, mask = refresh_context(
+                    self.context_encoder, self.context_dynamics, state, action, context, history, mask, alive)
+            # History-only has no response predictor. In Shallow, future context
+            # is unused by transition/prior, prediction heads and actor/critic.
             injected = context
             if self.context_rollout == "fixed":
                 injected = torch.where(alive[:, None], fixed, 0.)

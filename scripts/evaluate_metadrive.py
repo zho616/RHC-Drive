@@ -14,6 +14,7 @@ def summarize(rows):
     if not n:
         return {}
     keys=('success','crash','out_of_road','timeout','reward','route_completion','steps','mean_speed_km_h')
+    keys += tuple(key for key in ('out_of_lane', 'out_of_lane_step_fraction') if all(key in row for row in rows))
     result={key:sum(float(row[key]) for row in rows)/n for key in keys}
     successes=sum(row['success'] for row in rows)
     p=successes/n; z=1.959963984540054
@@ -31,6 +32,10 @@ def main():
     parser.add_argument('--episodes',type=int,default=100)
     parser.add_argument('--seed-start',type=int,default=10020)
     parser.add_argument('--device',default='cuda:0')
+    parser.add_argument('--environment-seed',type=int,default=None,
+                        help='Keep independent-test chassis/map sampling fixed across training seeds')
+    parser.add_argument('--record-lane-metrics',action='store_true',
+                        help='Record any off-lane event and the fraction of off-lane control steps, separately from out-of-road')
     parser.add_argument('--scenario-dir',type=pathlib.Path,help='Held-out nuPlan ScenarioNet split')
     parser.add_argument('--inference-seed-offset',type=int,default=12345)
     parser.add_argument('--eval-models',nargs='+',choices=('s','default','m','l','xl'),
@@ -56,6 +61,8 @@ def main():
     config=OmegaConf.load(checkpoint.parent/'.hydra/config.yaml')
     config.device=args.device
     OmegaConf.resolve(config)
+    if args.environment_seed is not None:
+        config.env.seed=args.environment_seed
     config.model.compile=False
     config.env.eval_start_seed=args.seed_start-int(config.env.seed)
     config.env.eval_num_scenarios=args.episodes
@@ -95,6 +102,8 @@ def main():
         eval_steering_scales=list(config.env.chassis.eval_steering_scales) if config.env.chassis.enabled else None,
         eval_friction_scales=list(getattr(config.env.chassis, 'eval_friction_scales', [1.0])) if config.env.chassis.enabled else None,
         policy='actor mode; stochastic RSSM posterior with fixed per-episode RNG seed')
+    provenance.update(training_seed=int(config.seed), environment_seed=int(config.env.seed),
+        out_of_lane_definition='Any control step with native info.off_lane=true; also report step fraction' if args.record_lane_metrics else None)
     (output/'provenance.json').write_text(json.dumps(provenance,indent=2)+'\n')
     rows=[]; started=time.monotonic(); env=None
 
@@ -122,7 +131,7 @@ def main():
                 obs=env.reset(seed=seed)
                 chassis=env.chassis_parameters or dict(model=env._env.vehicle.config["vehicle_model"])
                 state=model.get_initial_state(1)
-                total=0.; speeds=[]; done=False; info={}
+                total=0.; speeds=[]; lane_flags=[]; done=False; info={}
                 for step in range(1,int(config.env.time_limit)+1):
                     tensors={}
                     for key,value in obs.items():
@@ -132,6 +141,10 @@ def main():
                     action,state=model.act(batch,state,eval=True)
                     obs,reward,done,info=env.step(action[0].cpu().numpy())
                     total+=float(reward); speeds.append(float(env._env.vehicle.speed_km_h))
+                    if args.record_lane_metrics:
+                        if 'off_lane' not in info:
+                            raise RuntimeError('Native off_lane flag unavailable; do not substitute out_of_road')
+                        lane_flags.append(bool(info['off_lane']))
                     if done: break
                 if not done: raise RuntimeError('Environment did not terminate within its configured horizon')
                 row=dict(episode=len(rows)+1,seed=seed,chassis=chassis,steps=step,reward=total,
@@ -139,6 +152,8 @@ def main():
                     crash=bool(info.get('crash',False)),out_of_road=bool(info.get('out_of_road',False)),
                     timeout=bool(obs['is_last'] and not obs['is_terminal']),
                     route_completion=float(info.get('route_completion',0.)))
+                if args.record_lane_metrics:
+                    row.update(out_of_lane=any(lane_flags), out_of_lane_step_fraction=float(np.mean(lane_flags)))
                 rows.append(row)
                 trace.write(json.dumps(row)+'\n')
                 save_progress('running')

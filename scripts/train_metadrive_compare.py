@@ -29,6 +29,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--logdir", required=True, type=pathlib.Path)
     parser.add_argument("--steps", type=int, default=500000, help="Environment-step budget per method")
+    parser.add_argument("--seed", type=int, default=0, help="Independent training seed")
+    parser.add_argument("--batch-size", type=int, default=16, help="Sequences per training batch")
+    parser.add_argument("--batch-length", type=int, default=64, help="Sequence length per training batch")
+    parser.add_argument("--train-ratio", type=int, default=512, help="Target replay training ratio")
     parser.add_argument("--smoke", action="store_true", help="Run a small validation of both methods")
     parser.add_argument("--methods", nargs="+", choices=("r2dreamer", "dreamerv3"),
                         default=["r2dreamer", "dreamerv3"])
@@ -55,6 +59,10 @@ def main():
     args = parser.parse_args()
     if args.steps <= 0:
         parser.error("--steps must be positive")
+    if args.seed < 0:
+        parser.error("--seed must be nonnegative")
+    if min(args.batch_size, args.batch_length, args.train_ratio) <= 0:
+        parser.error("--batch-size, --batch-length and --train-ratio must be positive")
     if not 0 <= args.context_swap_weight < float("inf"):
         parser.error("--context-swap-weight must be finite and nonnegative")
     if not 0 <= args.context_wm_grad_scale < float("inf"):
@@ -136,17 +144,20 @@ def main():
     if args.context_wm_grad_scale:
         variant_overrides["r2dreamer_dali_shallow"].append(f"model.context.wm_grad_scale={args.context_wm_grad_scale}")
     lateral = 0.2 if args.reward_mode == "additive" else 0.0
-    common = [f"env.steps={args.steps}", "env.train_ratio=512", "buffer.max_size=500000",
+    common = [f"env.steps={args.steps}", f"env.train_ratio={args.train_ratio}",
+              f"batch_size={args.batch_size}", f"batch_length={args.batch_length}",
+              "buffer.max_size=500000",
               "buffer.storage_device=cpu", "env.env_num=8", "env.eval_episode_num=20", "env.eval_env_num=2",
               f"env.reward.mode={args.reward_mode}", f"env.reward.lateral={lateral}",
-              "seed=0", "trainer.save_best=true"]
+              f"seed={args.seed}", "trainer.save_best=true"]
     if args.map_block != "O":
         common += [f"env.map_block={args.map_block}", "env.task=metadrive_tintersection"]
     if args.chassis_randomization:
         if not (source / "envs/chassis.py").exists():
             parser.error("Selected source snapshot does not support chassis randomization")
         common += ["env.chassis.enabled=true"]
-    if args.context_swap_weight:
+    # A frozen source may default to swap=1; an explicit zero must still override it.
+    if args.context_variants or args.context_swap_weight:
         common += [f"model.context.swap_weight={args.context_swap_weight}"]
     if args.mass_friction_randomization:
         scales = "[0.6,0.7,0.8,0.9,1.0,1.1,1.2,1.3,1.4]"

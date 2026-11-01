@@ -41,6 +41,8 @@ class ServerLauncherTests(unittest.TestCase):
             c = build_config(root, self.arguments(seed=7, data_root=Path(directory)))
             OmegaConf.resolve(c)
             self.assertEqual(c.env.seed, 7)
+            self.assertEqual(c.env.seed + c.env.start_seed, 0)
+            self.assertEqual(c.env.seed + c.env.eval_start_seed, 10000)
             self.assertEqual(c.env.scenario_train_dir, str(Path(directory) / 'train'))
             self.assertEqual(c.env.scenario_eval_dir, str(Path(directory) / 'val'))
             self.assertEqual(c.env.scenario_test_dir, str(Path(directory) / 'test'))

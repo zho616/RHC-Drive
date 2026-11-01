@@ -91,10 +91,13 @@ class DaliJointDeter(nn.Module):
 
 
 class ContextRSSM(RSSM):
-    def __init__(self, config, embed_size, act_dim, injection="recurrent_concat", context_input_grad=False):
+    def __init__(self, config, embed_size, act_dim, injection="recurrent_concat", context_input_grad=False,
+                 context_dim=8):
         super().__init__(config, embed_size, act_dim)
         self.injection = injection
         self.context_input_grad = bool(context_input_grad)
+        if context_dim < 1 or (context_dim != 8 and injection != "dali_shallow"):
+            raise ValueError("Variable condition dimensions require dali_shallow")
         if self.context_input_grad and injection != "dali_shallow":
             raise ValueError("Selective context gradients currently support dali_shallow only")
         if injection in ("recurrent_concat", "dali_deep"):
@@ -106,7 +109,7 @@ class ContextRSSM(RSSM):
             self._deter_net = DaliJointDeter(self._deter_net)
         elif injection == "dali_shallow":
             name, first = next(iter(self._obs_net.named_children()))
-            layer = nn.Linear(first.in_features + 8, first.out_features)
+            layer = nn.Linear(first.in_features + context_dim, first.out_features)
             layer.apply(weight_init_)
             self._obs_net._modules[name] = layer
         elif injection == "adarms_deter":

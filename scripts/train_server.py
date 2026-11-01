@@ -29,6 +29,9 @@ def build_config(root, args):
     config = job_config(reference, args.output.resolve() / 'training', steps,
                         'r2dreamer' if args.method.startswith('r2dreamer') else 'dreamer', context)
     config.seed = args.seed
+    # Keep train/validation maps fixed across independent training seeds.
+    config.env.start_seed = int(reference.env.start_seed) + int(reference.env.seed) - args.seed
+    config.env.eval_start_seed = int(reference.env.eval_start_seed) + int(reference.env.seed) - args.seed
     config.device = args.device
     config.trainer.eval_every = args.eval_every or (5000 if args.task == 'nuplan' else 10000)
     config.env.eval_episode_num = args.eval_episodes or (100 if args.task == 'nuplan' else 20)

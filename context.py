@@ -20,6 +20,23 @@ CONTEXT_DIM = 8
 HISTORY_LENGTH = 5
 FEATURE_SCALE = STATE_SCALE + (1., 1.)
 
+# Physical values applied to the simulator, not preset IDs or sampled scale labels.
+from vehicle_parameters import ORACLE_KEYS, ORACLE_SCALE
+
+
+def direct_condition(data, source, state_dim=STATE_DIM):
+    """Parameter-free conditions for the privileged and raw-history controls."""
+    if source == "oracle":
+        shape = data["is_first"].shape[:len(data.batch_size)]
+        values = torch.stack([data[key].reshape(shape) for key in ORACLE_KEYS], -1).float()
+        return values / values.new_tensor(ORACLE_SCALE)
+    if source == "raw_history":
+        history, mask = data["ctx_history"].float(), data["ctx_mask"].bool()
+        scale = history.new_tensor(state_scale(state_dim) + (1., 1.))
+        history = torch.where(mask[..., None], history / scale, 0.)
+        return torch.cat((history.flatten(-2), mask.float()), -1)
+    raise ValueError(f"Unknown direct context source: {source}")
+
 
 def state_scale(state_dim):
     if state_dim not in (2, 4):
@@ -179,12 +196,14 @@ def context_swap_loss(predictor, data, context):
     return loss, metrics
 
 
-def auxiliary_loss(predictor, data, context, return_metrics=False):
-    """Fixed anchor context, five steps, step-wise detached state, normalized L1.
+def auxiliary_loss(predictor, data, context, return_metrics=False, prediction_horizon=5):
+    """Fixed anchor context, configurable horizon, detached state, normalized L1.
 
     Unlike the legacy JAX replay, ctx_prev_action at target t+1 contains a_t.
     RSSM's shifted data['action'] is deliberately not used here.
     """
+    if type(prediction_horizon) is not int or prediction_horizon < 1:
+        raise ValueError("prediction_horizon must be a positive integer")
     states = data["ctx_ego_state"].float()
     actions = data["ctx_prev_action"].float()
     batch, length = states.shape[:2]
@@ -201,7 +220,7 @@ def auxiliary_loss(predictor, data, context, return_metrics=False):
     first_total = states.new_zeros(states.shape[-1])
     first_count = torch.zeros((), device=states.device, dtype=torch.long)
     count = torch.zeros((), device=states.device, dtype=torch.long)
-    for horizon in range(1, min(5, length - 1) + 1):
+    for horizon in range(1, min(prediction_horizon, length - 1) + 1):
         support = length - horizon
         target = states[:, horizon:]
         action = actions[:, horizon:]

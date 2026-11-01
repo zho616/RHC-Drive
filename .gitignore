@@ -2,10 +2,15 @@
 logdir/
 deployment_bundle/
 output/
+outputs/
+tmp/
 iv_output/
 paper/
 datasets/
 data/
+.agents/
+.codex/
+.aws/
 .env
 .env.*
 !.env.example

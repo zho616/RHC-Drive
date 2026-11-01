@@ -21,10 +21,12 @@ def main():
     versions = {name: importlib.metadata.version(name) for name in
                 ("torch", "torchrl", "tensordict", "numpy", "gymnasium", "hydra-core",
                  "metadrive-simulator", "panda3d", "tensorboard")}
-    assets = Path(metadrive.__file__).resolve().parent / "assets"
+    from metadrive.envs import metadrive_env
+    package = Path(metadrive_env.__file__).resolve().parents[1]
+    assets = package / "assets"
     result = {"python": platform.python_version(), "versions": versions,
               "torch_cuda": torch.version.cuda, "cuda_available": torch.cuda.is_available(),
-              "metadrive_module": str(Path(metadrive.__file__).resolve()),
+              "metadrive_module": str(package / "__init__.py"),
               "metadrive_assets_exist": assets.is_dir(), "t_intersection_id": TInterSection.ID,
               "vehicle_types": sorted(vehicle_type), "gpus": []}
     if torch.cuda.is_available():

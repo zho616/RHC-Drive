@@ -183,6 +183,12 @@ critic:
 # Opt-in physical history branch; baseline architecture stays unchanged when false.
 context:
   enabled: false
+  source: encoded_history # oracle/raw_history directly condition the Shallow posterior without E/D.
+  use_history_context: null # null preserves legacy enabled; ablation configs link these switches.
+  use_response_loss: true # false removes both this loss and an otherwise unused predictor.
+  prediction_horizon: 5 # Response supervision horizon only; history window stays five.
+  use_context_exchange: null # null preserves legacy swap_weight behavior.
+  log_grad_norms: false # Actual E/D/RSSM gradients, unscaled and before AGC.
   injection: recurrent_concat # Also dali_deep: recurrent + prediction heads + actor/critic.
   actor_critic: false # Also concatenate detached context to actor, critic and slow critic.
   rollout: dynamic

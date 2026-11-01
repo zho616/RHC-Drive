@@ -181,6 +181,10 @@ class MetaDrive(gym.Env):
         self._eval_next_index = env_id
         chassis = getattr(config, "chassis", None)
         self._chassis_enabled = bool(chassis and chassis.enabled)
+        self._oracle_parameters = bool(getattr(config, 'oracle_parameters', False))
+        self._oracle_values = None
+        if self._oracle_parameters and not self._chassis_enabled:
+            raise ValueError('Vehicle-parameter conditioning requires chassis randomization')
         chassis_spec = None
         if self._chassis_enabled:
             from envs.chassis import validate_spec
@@ -262,6 +266,10 @@ class MetaDrive(gym.Env):
             from envs.chassis import LOG_KEYS
             for key in LOG_KEYS:
                 spaces[f"log_chassis_{key}"] = gym.spaces.Box(-np.inf, np.inf, shape=(), dtype=np.float32)
+        if self._oracle_parameters:
+            from vehicle_parameters import ORACLE_KEYS
+            for key in ORACLE_KEYS:
+                spaces[key] = gym.spaces.Box(-np.inf, np.inf, shape=(), dtype=np.float32)
         self._context_history = None
         if context_enabled:
             from envs.ego_history import EgoHistory
@@ -322,6 +330,9 @@ class MetaDrive(gym.Env):
             )
             self._env.config["chassis_random_seed"] = chassis_seed
         state, _ = self._env.reset(seed=seed)
+        if self._oracle_parameters:
+            from vehicle_parameters import read_vehicle_parameters
+            self._oracle_values = read_vehicle_parameters(self._env.vehicle)
         self._context_episode_counter += 1
         obs = self._obs(state, first=True)
         if getattr(self, "_context_history", None) is not None:
@@ -333,7 +344,11 @@ class MetaDrive(gym.Env):
     def chassis_parameters(self):
         if not getattr(self, "_chassis_enabled", False):
             return None
-        return dict(self._env.engine.chassis_manager.current)
+        values = dict(self._env.engine.chassis_manager.current)
+        if self._oracle_parameters and self._oracle_values is not None:
+            values.update({key.removeprefix('log_chassis_'): float(value)
+                           for key, value in self._oracle_values.items()})
+        return values
 
     def _add_chassis_logs(self, obs):
         if getattr(self, "_context_history", None) is not None:
@@ -343,6 +358,8 @@ class MetaDrive(gym.Env):
             from envs.chassis import LOG_KEYS
             current = self.chassis_parameters
             obs.update({f"log_chassis_{key}": np.float32(current[key]) for key in LOG_KEYS})
+        if self._oracle_parameters:
+            obs.update(self._oracle_values)
 
     def begin_evaluation(self):
         self._eval_next_index = self._env_id

@@ -101,7 +101,7 @@ PPO/SAC只接收同一环境的原生状态向量。
 ## 5. TensorBoard 与独立测试
 
 ```bash
-tensorboard --logdir logdir --host 0.0.0.0 --port 6006
+tensorboard --logdir logdir --host 127.0.0.1 --port 6006
 ```
 
 查看 `episode/eval_score`、`episode/eval_success`、`episode/eval_route_completion`。
