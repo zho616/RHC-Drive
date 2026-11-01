@@ -11,8 +11,8 @@
 每个实验保留 8 个训练环境，不能为了并发悄悄改小 batch 或环境数。
 
 ```bash
-git clone https://github.com/zho616/context-dreamer.git
-cd context-dreamer
+git clone https://github.com/zho616/RHC-Drive.git
+cd RHC-Drive
 python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
@@ -29,7 +29,7 @@ MetaDrive assets 必须存在；若安装包未包含 assets，先按 MetaDrive 
 ## 对齐实际模拟器
 
 相同版本号不保证实际源码相同。本机 MetaDrive0.4.3 使用源码快照
-`f0a18fdf55c720e6e3023e97fae8b76beb652846`，源码哈希已记录在仓库：
+`f0a18fdf55c720e6e3023e97fae8b76beb652846`，该 revision 标识原训练机的源码快照，并非可从上游直接安装的提交。实际源码哈希已记录在仓库：
 
 ```bash
 python scripts/export_metadrive_runtime.py --check configs/metadrive_runtime_reference.json

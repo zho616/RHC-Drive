@@ -3,9 +3,9 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "r2dreamer"
+name = "rhc-drive"
 version = "0.1.0"
-description = "R2-Dreamer: Redundancy-Reduced World Models without Decoders or Augmentation"
+description = "RHC-Drive: Response-History-Conditioned World Models for Zero-Shot Cross-Chassis Driving"
 requires-python = ">=3.11,<3.12"
 dependencies = [
     "torch==2.8.0",
@@ -30,7 +30,7 @@ metaworld = ["metaworld==3.0.0", "mujoco==3.3.0"]
 metadrive = ["metadrive-simulator==0.4.3", "opencv-python<4.12", "panda3d==1.10.16", "panda3d-gltf==0.13"]
 memorymaze = ["memory_maze==1.0.3", "mujoco==3.3.0", "dm_control==1.0.28", "gym==0.26.2"]
 isaaclab = ["isaaclab[isaacsim,all]==2.3.2"]
-all = ["r2dreamer[dmc,atari,crafter,metaworld,metadrive,memorymaze,isaaclab]"]
+all = ["rhc-drive[dmc,atari,crafter,metaworld,metadrive,memorymaze,isaaclab]"]
 
 [dependency-groups]
 dev = ["pre-commit>=4"]

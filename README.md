@@ -1,135 +1,162 @@
-# Context-Dreamer experiments
+<div align="center">
 
-This fork adds vehicle dynamics context learning and chassis randomization to R2-Dreamer.
-See the [experiment archive](experiments/README.md), [server reproduction guide](docs/server_training.md),
-and [current T-intersection setup](docs/context_tintersection_mass_friction_500k.md).
-The upstream implementation and credits are retained below.
+# RHC-Drive
 
-For the current nuPlan / roundabout / T-intersection core code and independent
-multi-server or multi-GPU runs, see [parallel server setup](docs/parallel_server_training.md).
-The portable entry point is `python scripts/train_server.py --help`.
+### Response-History-Conditioned World Models for Zero-Shot Cross-Chassis Driving
 
-For the **current roundabout five-way ablations**, Full H5 and the no-context
-baseline, use `python scripts/train_roundabout_ablation.py --help` and follow
-[cloud training with the matched 500K recipe](docs/cloud_roundabout_training.md).
-This entry point needs no local experiment archives or checkpoints.
+Learn vehicle dynamics from recent action–response history and condition a world model for driving across unseen chassis.
 
-## R2-Dreamer: Redundancy-Reduced World Models without Decoders or Augmentation
+[Method](#method) · [Installation](#installation) · [Training](#training) · [Evaluation](#evaluation) · [Deployment guide](docs/cloud_roundabout_training.md) · [Documentation](docs/README.md)
 
-This repository provides the official implementation of [R2-Dreamer][r2dreamer] (ICLR 2026), a decoder-free, augmentation-free world model with redundancy-reducing regularization on latent representations. It also includes an efficient PyTorch DreamerV3 reproduction that trains **~5x faster** than a widely used [codebase][dreamerv3-torch], along with other baselines. Selecting R2-Dreamer via the config provides an additional **~1.6x speedup** over this baseline.
+</div>
 
-## Instructions
+![RHC-Drive method overview](assets/figures/method.png)
 
-Install dependencies. This repository is tested with Ubuntu 24.04 and Python 3.11.
+Research implementation for the RHC-Drive manuscript. This repository includes the history context encoder, auxiliary dynamics supervision, posterior-conditioned world model, MetaDrive environments, and reproducible training and evaluation workflows. Paper links, citation metadata, and downloadable checkpoints will be added with the paper release.
 
-Installing via a virtual env like [uv](https://docs.astral.sh/uv/) is recommended. If you prefer Docker, follow [`docs/docker.md`](docs/docker.md).
+## Method
 
-```bash
-# Select the environments you need, or use "all" to install everything.
-# Available extras: dmc, atari, crafter, metaworld, metadrive, memorymaze, isaaclab, all
-pip install -e ".[dmc,metaworld]"
-```
+RHC-Drive infers a compact dynamics context from completed transitions instead of requiring vehicle parameters at deployment. The policy runs with fixed network weights while its context updates online.
 
-Run training on default settings:
+1. **Response history.** At 10 Hz, collect the last five completed action–response tokens. Each token contains longitudinal acceleration, yaw rate, speed, measured front-wheel angle, and the preceding throttle/brake and steering commands. A validity mask handles episode starts.
+2. **Context learning.** A two-block Transformer and masked pooling produce an eight-dimensional context. A residual response predictor supplies five-step prediction supervision, together with cross-episode context exchange between samples with the same vehicle configuration.
+3. **World-model conditioning.** Inject the context into the RSSM posterior through a shallow conditioning path. In the full method, world-model gradients are stopped at the context encoder. The actor and critic use the resulting latent state.
 
-```bash
-python3 train.py logdir=./logdir/test
-```
+The overview is from our manuscript; editable [SVG figures](assets/figures/) are included alongside the README previews.
 
-MetaDrive roundabout training with LiDAR, ego state, and navigation input:
+## Driving benchmarks
 
-```bash
-conda activate r2dreamer
-python train.py --config-name metadrive
-```
+The code supports procedural **T-intersection** and **roundabout** tasks, plus **nuPlan-derived scenarios** converted for MetaDrive.
 
-See [the MetaDrive guide](docs/metadrive.md) for configuration, smoke tests, and monitoring.
-Optional K5 ego-dynamics context for R2Dreamer/DreamerV3: [migration guide](docs/context_dreamer.md).
-Three-model chassis randomization with integer mass/steering grids: [training guide](docs/chassis_randomization.md).
+![Training and unseen vehicle types](assets/figures/chassis.png)
 
-For interactive 3D/top-down policy testing and custom model-loading interfaces,
-see [the rendering test guide](docs/metadrive_render.md).
+Training uses Default, M, and L chassis with randomized mass and wheel friction. Evaluation separates held-out maps with the training chassis distribution (**ID**) from unseen **S** and **XL** chassis. In the matched roundabout recipe, mass and friction multipliers range from 0.6 to 1.4 in increments of 0.1.
 
-Monitoring results:
-```bash
-tensorboard --logdir ./logdir
-```
+![Representative nuPlan-derived driving trajectories](assets/figures/trajectories.png)
 
-Switching algorithms:
+*Representative paired trajectories from the manuscript: R2-Dreamer in blue and RHC-Drive in red; dashed orange curves indicate the reference routes. These examples illustrate behavior; aggregate comparisons require independent evaluation across training seeds.*
+
+## Installation
+
+Use **Python 3.11** on Linux. The current training environment uses PyTorch 2.8.0 with CUDA 12.8, TorchRL 0.9.2, TensorDict 0.9.1, and Panda3D 1.10.16. Dependencies are recorded in [pyproject.toml](pyproject.toml).
 
 ```bash
-# Choose an algorithm via model.rep_loss:
-# r2dreamer|dreamer|infonce|dreamerpro
-python3 train.py model.rep_loss=r2dreamer
+git clone https://github.com/zho616/RHC-Drive.git
+cd RHC-Drive
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+python -m pip install -e '.[metadrive]'
+python scripts/server_preflight.py
 ```
 
-For easier code reading, inline tensor shape annotations are provided. See [`docs/tensor_shapes.md`](docs/tensor_shapes.md).
-
-
-## Available Benchmarks
-At the moment, the following benchmarks are available in this repository.
-
-| Environment        | Observation | Action | Budget | Description |
-|-------------------|---|---|---|-----------------------|
-| [Meta-World](https://github.com/Farama-Foundation/Metaworld) | Image | Continuous | 1M | Robotic manipulation with complex contact interactions.|
-| [DMC Proprio](https://github.com/deepmind/dm_control) | State | Continuous | 500K | DeepMind Control Suite with low-dimensional inputs. |
-| [DMC Vision](https://github.com/deepmind/dm_control) | Image | Continuous |1M| DeepMind Control Suite with high-dimensional images inputs. |
-| [DMC Subtle](envs/dmc_subtle.py) | Image | Continuous |1M| DeepMind Control Suite with tiny task-relevant objects. |
-| [Atari 100k](https://github.com/Farama-Foundation/Arcade-Learning-Environment) | Image | Discrete |400K| 26 Atari games. |
-| [Crafter](https://github.com/danijar/crafter) | Image | Discrete |1M| Survival environment to evaluates diverse agent abilities.|
-| [Memory Maze](https://github.com/jurgisp/memory-maze) | Image |Discrete |100M| 3D mazes to evaluate RL agents' long-term memory.|
-| [IsaacLab](https://github.com/isaac-sim/IsaacLab) | State / Image | Continuous | 0.5M–1M | GPU-parallelized robotic simulation. |
-| [MetaDrive](https://github.com/metadriverse/metadrive) | LiDAR + State + Navigation | Continuous | 500K | Single-agent roundabout driving with background traffic. |
-
-Use Hydra to select a benchmark and a specific task using `env` and `env.task`, respectively.
+**Match the simulator before reproducing experiments.** A version number alone does not identify the exact runtime. The reference in [configs/metadrive_runtime_reference.json](configs/metadrive_runtime_reference.json) records the actual source hashes. Its Git revision identifies the original machine's source snapshot and is not an upstream installation target. Follow the [runtime installation and verification instructions](docs/cloud_roundabout_training.md#对齐实际模拟器) to install the separately distributed simulator source and assets, then run:
 
 ```bash
-python3 train.py ... env=dmc_vision env.task=dmc_walker_walk
+python scripts/export_metadrive_runtime.py --check configs/metadrive_runtime_reference.json
+python scripts/server_preflight.py
 ```
 
-## Headless rendering
+The simulator bundle, nuPlan-derived data, checkpoints, and training logs are distributed separately from Git. nuPlan experiments require prepared `train/val/test` scenario directories; see the [multi-server guide](docs/parallel_server_training.md).
 
-If you run MuJoCo-based environments (DMC / MetaWorld) on headless machines, you may need to set `MUJOCO_GL` for offscreen rendering. **Using EGL is recommended** as it accelerates rendering, leading to faster simulation throughput.
+## Training
+
+### RHC-Drive on roundabout
+
+The portable launcher freezes source files, records configuration and simulator hashes, trains the model, selects a checkpoint on validation episodes, and performs independent tests.
 
 ```bash
-# For example, when using EGL (GPU)
-export MUJOCO_GL=egl
-# (optional) Choose which GPU EGL uses
-export MUJOCO_EGL_DEVICE_ID=0
+python scripts/train_roundabout_ablation.py \
+  --methods full_h5 --seeds 0 1 2 --gpu 0 \
+  --output logdir/rhc_roundabout_full
 ```
 
-More details: [Working with MuJoCo-based environments](https://docs.pytorch.org/rl/stable/reference/generated/knowledge_base/MUJOCO_INSTALLATION.html)
+The matched recipe is [configs/metadrive_roundabout_500k.yaml](configs/metadrive_roundabout_500k.yaml): 500K environment steps, eight training environments, batch 16 × 64, train ratio 512, and 20 validation episodes every 10K steps. Jobs in one invocation run sequentially. Use distinct output directories when assigning methods or seeds to different GPUs or servers.
 
-## Code formatting
+### Five method ablations
 
-If you want automatic formatting/basic checks before commits, you can enable `pre-commit`:
+| Experiment | Launcher method | Conditioning and supervision |
+|---|---|---|
+| Ours | `full_h5` | Encoded K5 history; H5 response prediction + context exchange |
+| 1. World-model-trained encoder | `history_only` | Encoder trained by world-model gradients; no response or exchange loss |
+| 2. No context exchange | `response_only` | H5 response prediction; no exchange loss |
+| 3. One-step prediction | `full_h1` | H1 response prediction + exchange; input history remains K5 |
+| 4. Vehicle-parameter oracle | `oracle` | Direct normalized physical parameters, without history encoding |
+| 5. Raw history | `raw_history` | Direct normalized 5 × 6 history and five validity indicators |
+| No-context baseline | `baseline` | R2-Dreamer without context conditioning |
+
+The oracle uses ten compact physical quantities: mass, maximum steering angle, wheel friction, length, width, wheelbase, track width, wheel radius, maximum engine force, and maximum brake force. These are read from the spawned vehicle; the condition contains no vehicle-type identifier. See [vehicle_parameters.py](vehicle_parameters.py).
+
+Run all five ablations over three training seeds (15 sequential jobs):
 
 ```bash
-pip install pre-commit
-# This sets up a pre-commit hook so that checks are run every time you commit
-pre-commit install
-# Manual pre-commit run on all files
-pre-commit run --all-files
+python scripts/train_roundabout_ablation.py \
+  --methods history_only response_only full_h1 oracle raw_history \
+  --seeds 0 1 2 --gpu 0 --output logdir/rhc_roundabout_ablations
 ```
 
-## Troubleshooting
+Inspect the proposed jobs with `--dry-run`. For a small CPU functional check, use a fresh output directory with `--smoke`; its reduced budget is unsuitable for reporting experiment results. The launcher requires a new output directory and does not silently restart a partially trained job.
 
-If you encounter installation or runtime issues, please refer to our [Troubleshooting Guide](docs/troubleshooting.md).
+### Other driving tasks
 
-## Citation
+Use [scripts/train_server.py](scripts/train_server.py) for T-intersection, nuPlan-derived scenarios, and baseline comparisons. The internal method selector `r2dreamer_context` denotes our context-conditioned model on the R2-Dreamer backbone.
 
-If you find this code useful, please consider citing:
-
-```bibtex
-@inproceedings{
-morihira2026rdreamer,
-title={R2-Dreamer: Redundancy-Reduced World Models without Decoders or Augmentation},
-author={Naoki Morihira and Amal Nahar and Kartik Bharadwaj and Yasuhiro Kato and Akinobu Hayashi and Tatsuya Harada},
-booktitle={The Fourteenth International Conference on Learning Representations},
-year={2026},
-url={https://openreview.net/forum?id=Je2QqXrcQq}
-}
+```bash
+python scripts/train_server.py --task tintersection \
+  --method r2dreamer_context --seed 0 --gpu 0 \
+  --output logdir/rhc_tintersection_seed0
 ```
 
-[r2dreamer]: https://openreview.net/forum?id=Je2QqXrcQq&referrer=%5BAuthor%20Console%5D(%2Fgroup%3Fid%3DICLR.cc%2F2026%2FConference%2FAuthors%23your-submissions)
-[dreamerv3-torch]: https://github.com/NM512/dreamerv3-torch
+See [docs/parallel_server_training.md](docs/parallel_server_training.md) for nuPlan data paths, method choices, and independent server assignments.
+
+## Evaluation
+
+The roundabout launcher evaluates the validation-selected `best.pt` on **100 episodes each for ID, S, and XL**, using fixed test maps and chassis sampling across methods and training seeds. Test episodes do not select checkpoints.
+
+Each output directory contains:
+
+| Path | Contents |
+|---|---|
+| `plan.json`, `status.json` | Job definitions, fingerprints, and execution state |
+| `source/`, `configs/`, `controls/` | Frozen implementation, configuration, and launch/evaluation scripts |
+| `training/<job>/` | Checkpoints, training metrics, and TensorBoard events |
+| `evaluation/<job>/<ID\|S\|XL>/` | Test summaries and per-episode records |
+| `tables/test_results.csv` | Independent test results across completed jobs |
+
+To evaluate a checkpoint separately, use its frozen source:
+
+```bash
+python scripts/evaluate_metadrive.py \
+  --checkpoint logdir/rhc_roundabout_full/training/seed0_full_h5/best.pt \
+  --source-root logdir/rhc_roundabout_full/source \
+  --output logdir/rhc_full_seed0_test_ID \
+  --episodes 100 --seed-start 10020 --environment-seed 0 \
+  --record-lane-metrics --device cpu
+```
+
+Add `--eval-models s` or `--eval-models xl` with the corresponding held-out test split to evaluate unseen chassis. Report uncertainty across independently trained seeds, rather than treating test episodes as independent training runs.
+
+```bash
+tensorboard --logdir logdir/rhc_roundabout_full/training --host 127.0.0.1 --port 6006
+```
+
+## Repository guide
+
+| Location | Purpose |
+|---|---|
+| [context.py](context.py) | History encoder, response predictor, context exchange, and direct conditions |
+| [context_rssm.py](context_rssm.py), [dreamer.py](dreamer.py) | Context-conditioned world model and learning integration |
+| [vehicle_parameters.py](vehicle_parameters.py) | Compact vehicle-parameter oracle |
+| [envs/](envs/) | MetaDrive observations, response history, chassis randomization, and scenario adapters |
+| [configs/](configs/) | Training recipes and runtime reference |
+| [scripts/](scripts/) | Portable launchers, evaluation, preflight, and runtime export |
+| [docs/README.md](docs/README.md) | Current reproduction guides and historical documentation index |
+| [tests/](tests/) | Implementation and experiment-protocol checks |
+| [assets/figures/](assets/figures/) | Manuscript figures used on this page |
+
+Earlier exploratory settings and experiment archives remain available for provenance. Use the matched roundabout launcher and current guides above for the five ablations.
+
+## Citation and acknowledgments
+
+The manuscript citation will be added with the paper release. This implementation builds on R2-Dreamer and MetaDrive; see [ACKNOWLEDGMENTS.md](ACKNOWLEDGMENTS.md) for upstream references and credits. The original [MIT license](LICENSE) and copyright notice are retained.

@@ -10,8 +10,8 @@
 精确版本见 `experiments/runtime_reference.json`。
 
 ```bash
-git clone https://github.com/zho616/context-dreamer.git
-cd context-dreamer
+git clone https://github.com/zho616/RHC-Drive.git
+cd RHC-Drive
 python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip

@@ -10,8 +10,8 @@ Linux，Python 3.11，支持 CUDA 12.8 版 PyTorch 的 NVIDIA 驱动。
 当前实测环境为 16GB 显存、约32GB内存；并发多个实验需要相应增加内存和 CPU。
 
 ```bash
-git clone https://github.com/zho616/context-dreamer.git
-cd context-dreamer
+git clone https://github.com/zho616/RHC-Drive.git
+cd RHC-Drive
 python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
